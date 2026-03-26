@@ -11,8 +11,12 @@ from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_
 
 ARTIFACTS_DIR = Path("artifacts")
 AUTH_DIR = Path("playwright/.auth")
-ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-AUTH_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _ensure_dirs() -> None:
+    """Create runtime directories. Called at startup, not at import time."""
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    AUTH_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass
@@ -55,6 +59,7 @@ class QnapRunner:
         self._page: Optional[Page] = None
 
     def __enter__(self) -> "QnapRunner":
+        _ensure_dirs()
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(headless=self.settings.headless)
         self._context = self._browser.new_context(ignore_https_errors=self.settings.ignore_https_errors)
@@ -248,37 +253,17 @@ class QnapRunner:
 
     def extract_interesting_lines(self, body_text: str) -> list[str]:
         keywords = [
-            "warning",
-            "error",
-            "degraded",
-            "critical",
-            "failed",
-            "healthy",
-            "good",
-            "ok",
-            "raid",
-            "disk",
-            "volume",
-            "pool",
-            "snapshot",
-            "storage",
-            "read/write",
-            "abnormal",
+            "warning", "error", "degraded", "critical", "failed",
+            "healthy", "good", "ok", "raid", "disk", "volume",
+            "pool", "snapshot", "storage", "read/write", "abnormal",
         ]
 
         lines = [line.strip() for line in body_text.splitlines() if line.strip()]
         interesting: list[str] = []
 
         noise = {
-            "good",
-            "warning",
-            "error",
-            "ok",
-            "storage & snapshots",
-            "storage",
-            "snapshot",
-            "overview",
-            "data protection",
+            "good", "warning", "error", "ok", "storage & snapshots",
+            "storage", "snapshot", "overview", "data protection",
         }
 
         for line in lines:

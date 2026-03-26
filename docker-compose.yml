@@ -1,0 +1,23 @@
+# Compose v2+ — no top-level "version" key needed
+
+services:
+  homelab-automation:
+    build: .
+    container_name: homelab-automation
+    restart: unless-stopped
+    ports:
+      - "8010:8010"
+    environment:
+      QNAP_URL: "http://192.168.10.114/"
+      QNAP_USERNAME: "${QNAP_USERNAME}"
+      QNAP_PASSWORD: "${QNAP_PASSWORD}"
+      OPNSENSE_URL: "http://192.168.10.1"
+      OPNSENSE_API_KEY: "${OPNSENSE_API_KEY}"
+      OPNSENSE_API_SECRET: "${OPNSENSE_API_SECRET}"
+      HEADLESS: "true"
+      IGNORE_HTTPS_ERRORS: "true"
+      API_TOKEN: "${API_TOKEN}"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./playwright:/app/playwright
+    shm_size: "1gb"

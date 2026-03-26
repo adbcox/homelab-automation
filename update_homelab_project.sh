@@ -46,7 +46,7 @@ python -m playwright install chromium
 
 mkdir -p artifacts playwright/.auth
 cp -n .env.example .env || true
-chmod +x start_api.sh || true
+chmod +x start_api.sh run_local_api.sh test_local_api.sh || true
 
 echo
 echo "Done."
@@ -55,11 +55,11 @@ echo "  source .venv/bin/activate"
 echo "  python app.py all-checks"
 echo
 echo "Start API with:"
-echo "  PORT=8001 ./start_api.sh"
+echo "  PORT=8010 ./start_api.sh"
 echo
 echo "Then test:"
-echo "  curl http://127.0.0.1:8001/health"
-echo "  curl -X POST http://127.0.0.1:8001/run/all-checks -H 'X-API-Token: YOUR_TOKEN'"
+echo "  curl http://127.0.0.1:8010/health"
+echo "  curl -X POST http://127.0.0.1:8010/run/all-checks -H 'X-API-Token: YOUR_TOKEN'"
 EOF
 
 cat > start_api.sh <<'EOF'
@@ -67,7 +67,7 @@ cat > start_api.sh <<'EOF'
 set -euo pipefail
 
 source .venv/bin/activate
-PORT="${PORT:-8001}"
+PORT="${PORT:-8010}"
 uvicorn api_server:app --host 0.0.0.0 --port "$PORT"
 EOF
 
@@ -85,8 +85,12 @@ from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_
 
 ARTIFACTS_DIR = Path("artifacts")
 AUTH_DIR = Path("playwright/.auth")
-ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-AUTH_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _ensure_dirs() -> None:
+    """Create runtime directories. Called at startup, not at import time."""
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    AUTH_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass
@@ -129,6 +133,7 @@ class QnapRunner:
         self._page: Optional[Page] = None
 
     def __enter__(self) -> "QnapRunner":
+        _ensure_dirs()
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(headless=self.settings.headless)
         self._context = self._browser.new_context(ignore_https_errors=self.settings.ignore_https_errors)
@@ -193,28 +198,21 @@ class QnapRunner:
 
     def try_login(self) -> bool:
         self.goto_login()
-
         if self.is_logged_in():
             return True
 
         user_selectors = [
-            'input[name="username"]',
-            'input[id="username"]',
-            'input[placeholder*="user" i]',
-            'input[type="text"]',
+            'input[name="username"]', 'input[id="username"]',
+            'input[placeholder*="user" i]', 'input[type="text"]',
         ]
         pass_selectors = [
-            'input[name="password"]',
-            'input[id="password"]',
-            'input[id="pwd"]',
-            'input[placeholder*="password" i]',
+            'input[name="password"]', 'input[id="password"]',
+            'input[id="pwd"]', 'input[placeholder*="password" i]',
             'input[type="password"]',
         ]
         button_selectors = [
-            'button:has-text("Sign in")',
-            'button:has-text("Login")',
-            'button:has-text("Log in")',
-            'input[type="submit"]',
+            'button:has-text("Sign in")', 'button:has-text("Login")',
+            'button:has-text("Log in")', 'input[type="submit"]',
             'button[type="submit"]',
         ]
 
@@ -259,7 +257,6 @@ class QnapRunner:
 
         if clicked:
             self.page.wait_for_timeout(5000)
-
         return self.is_logged_in()
 
     def _click_first_working(self, selectors: list[str]) -> bool:
@@ -277,23 +274,15 @@ class QnapRunner:
 
     def go_to_storage_snapshots(self) -> bool:
         selectors = [
-            'text="Storage & Snapshots"',
-            'text="Storage"',
-            '[title="Storage & Snapshots"]',
-            '[aria-label="Storage & Snapshots"]',
-            'a:has-text("Storage & Snapshots")',
-            'div:has-text("Storage & Snapshots")',
-            'span:has-text("Storage & Snapshots")',
-            'li:has-text("Storage & Snapshots")',
-            'a:has-text("Storage")',
-            'div:has-text("Storage")',
-            'span:has-text("Storage")',
-            'li:has-text("Storage")',
+            'text="Storage & Snapshots"', 'text="Storage"',
+            '[title="Storage & Snapshots"]', '[aria-label="Storage & Snapshots"]',
+            'a:has-text("Storage & Snapshots")', 'div:has-text("Storage & Snapshots")',
+            'span:has-text("Storage & Snapshots")', 'li:has-text("Storage & Snapshots")',
+            'a:has-text("Storage")', 'div:has-text("Storage")',
+            'span:has-text("Storage")', 'li:has-text("Storage")',
         ]
-
         if self._click_first_working(selectors):
             return True
-
         try:
             all_candidates = self.page.locator("a, button, div, span, li")
             count = min(all_candidates.count(), 300)
@@ -317,81 +306,50 @@ class QnapRunner:
                         continue
         except Exception:
             pass
-
         return False
 
     def extract_interesting_lines(self, body_text: str) -> list[str]:
         keywords = [
-            "warning",
-            "error",
-            "degraded",
-            "critical",
-            "failed",
-            "healthy",
-            "good",
-            "ok",
-            "raid",
-            "disk",
-            "volume",
-            "pool",
-            "snapshot",
-            "storage",
-            "read/write",
-            "abnormal",
+            "warning", "error", "degraded", "critical", "failed",
+            "healthy", "good", "ok", "raid", "disk", "volume",
+            "pool", "snapshot", "storage", "read/write", "abnormal",
         ]
-
         lines = [line.strip() for line in body_text.splitlines() if line.strip()]
         interesting: list[str] = []
-
         noise = {
-            "good",
-            "warning",
-            "error",
-            "ok",
-            "storage & snapshots",
-            "storage",
-            "snapshot",
-            "overview",
-            "data protection",
+            "good", "warning", "error", "ok", "storage & snapshots",
+            "storage", "snapshot", "overview", "data protection",
         }
-
         for line in lines:
             low = line.lower()
             if low in noise:
                 continue
             if any(word in low for word in keywords):
                 interesting.append(line)
-
         deduped: list[str] = []
         seen = set()
         for line in interesting:
             if line not in seen:
                 deduped.append(line)
                 seen.add(line)
-
         return deduped[:30]
 
     def qnap_health_snapshot(self) -> dict:
         self.goto_login()
         login_ok = self.try_login()
         dashboard_shot = self.screenshot("qnap-dashboard.png")
-
         storage_clicked = False
         if login_ok:
             storage_clicked = self.go_to_storage_snapshots()
-
         self.page.wait_for_timeout(5000)
         storage_shot = self.screenshot("qnap-storage.png")
-
         title = self.page.title()
         body_text = self.page.locator("body").inner_text(timeout=10000)[:12000]
         interesting_lines = self.extract_interesting_lines(body_text)
-
         warning_signals = [
             line for line in interesting_lines
             if any(word in line.lower() for word in ["warning", "error", "degraded", "critical", "failed", "abnormal"])
         ]
-
         return {
             "qnap_url": self.settings.qnap_url,
             "login_ok": login_ok,
@@ -451,28 +409,22 @@ def fetch_json(session: requests.Session, url: str, verify: bool):
 
 def summarize_interfaces(data) -> list[dict]:
     results: list[dict] = []
-
     if not isinstance(data, list):
         return results
-
     for item in data:
         if not isinstance(item, dict):
             continue
-
-        results.append(
-            {
-                "identifier": item.get("identifier") or item.get("device"),
-                "description": item.get("description"),
-                "device": item.get("device"),
-                "status": item.get("status"),
-                "addr4": item.get("addr4"),
-                "addr6": item.get("addr6"),
-                "enabled": item.get("enabled"),
-                "routes": item.get("routes", []),
-                "gateways": item.get("gateways", []),
-            }
-        )
-
+        results.append({
+            "identifier": item.get("identifier") or item.get("device"),
+            "description": item.get("description"),
+            "device": item.get("device"),
+            "status": item.get("status"),
+            "addr4": item.get("addr4"),
+            "addr6": item.get("addr6"),
+            "enabled": item.get("enabled"),
+            "routes": item.get("routes", []),
+            "gateways": item.get("gateways", []),
+        })
     return results
 
 
@@ -480,28 +432,24 @@ def summarize_gateways(data) -> list[dict]:
     items = []
     if isinstance(data, dict):
         items = data.get("items", [])
-
     results: list[dict] = []
     for item in items:
         if not isinstance(item, dict):
             continue
-        results.append(
-            {
-                "name": item.get("name"),
-                "address": item.get("address"),
-                "status": item.get("status_translated") or item.get("status"),
-                "loss": item.get("loss"),
-                "delay": item.get("delay"),
-                "stddev": item.get("stddev"),
-            }
-        )
+        results.append({
+            "name": item.get("name"),
+            "address": item.get("address"),
+            "status": item.get("status_translated") or item.get("status"),
+            "loss": item.get("loss"),
+            "delay": item.get("delay"),
+            "stddev": item.get("stddev"),
+        })
     return results
 
 
 def summarize_system_info(data) -> dict:
     if not isinstance(data, dict):
         return {}
-
     return {
         "name": data.get("name"),
         "versions": data.get("versions", []),
@@ -511,12 +459,7 @@ def summarize_system_info(data) -> dict:
 
 def opnsense_health() -> dict:
     settings = load_settings()
-
-    verify = not (
-        settings.opnsense_url.startswith("https://")
-        and settings.ignore_https_errors
-    )
-
+    verify = not (settings.opnsense_url.startswith("https://") and settings.ignore_https_errors)
     session = requests.Session()
     session.auth = (settings.api_key, settings.api_secret)
 
@@ -535,40 +478,19 @@ def opnsense_health() -> dict:
     }
 
     try:
-        system_info = fetch_json(session, system_info_url, verify=verify)
-        result["system_info"] = summarize_system_info(system_info)
+        result["system_info"] = summarize_system_info(fetch_json(session, system_info_url, verify=verify))
     except Exception as exc:
-        result["errors"].append(
-            {
-                "section": "system_info",
-                "url": system_info_url,
-                "error": str(exc),
-            }
-        )
+        result["errors"].append({"section": "system_info", "url": system_info_url, "error": str(exc)})
 
     try:
-        interfaces = fetch_json(session, interfaces_url, verify=verify)
-        result["interfaces"] = summarize_interfaces(interfaces)
+        result["interfaces"] = summarize_interfaces(fetch_json(session, interfaces_url, verify=verify))
     except Exception as exc:
-        result["errors"].append(
-            {
-                "section": "interfaces",
-                "url": interfaces_url,
-                "error": str(exc),
-            }
-        )
+        result["errors"].append({"section": "interfaces", "url": interfaces_url, "error": str(exc)})
 
     try:
-        gateways = fetch_json(session, gateways_url, verify=verify)
-        result["gateways"] = summarize_gateways(gateways)
+        result["gateways"] = summarize_gateways(fetch_json(session, gateways_url, verify=verify))
     except Exception as exc:
-        result["errors"].append(
-            {
-                "section": "gateways",
-                "url": gateways_url,
-                "error": str(exc),
-            }
-        )
+        result["errors"].append({"section": "gateways", "url": gateways_url, "error": str(exc)})
 
     return result
 EOF
@@ -608,13 +530,11 @@ def summarize_qnap(result: dict) -> dict:
 def summarize_opnsense(result: dict) -> dict:
     wan = None
     lan = None
-
     for iface in result.get("interfaces", []):
         if iface.get("identifier") == "wan":
             wan = iface
         if iface.get("identifier") == "lan":
             lan = iface
-
     return {
         "system_info": result.get("system_info"),
         "lan": lan,
@@ -641,7 +561,6 @@ def run_opnsense_health() -> dict:
 def run_all_checks() -> dict:
     qnap_raw = run_qnap_check()
     opnsense_raw = run_opnsense_health()
-
     combined = {
         "summary": {
             "qnap": summarize_qnap(qnap_raw),
@@ -652,7 +571,6 @@ def run_all_checks() -> dict:
             "opnsense": opnsense_raw,
         },
     }
-
     write_json("artifacts/all-checks.json", combined)
     return combined
 
@@ -661,21 +579,16 @@ def main() -> int:
     if len(sys.argv) != 2:
         print("Usage: python app.py [qnap-check|opnsense-health|all-checks]")
         return 1
-
     command = sys.argv[1].strip().lower()
-
     if command == "qnap-check":
         print(json.dumps(run_qnap_check(), indent=2))
         return 0
-
     if command == "opnsense-health":
         print(json.dumps(run_opnsense_health(), indent=2))
         return 0
-
     if command == "all-checks":
         print(json.dumps(run_all_checks(), indent=2))
         return 0
-
     print(f"Unknown command: {command}")
     return 1
 
@@ -688,6 +601,7 @@ cat > api_server.py <<'EOF'
 from __future__ import annotations
 
 import os
+from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
@@ -697,10 +611,10 @@ from app import run_all_checks, run_opnsense_health, run_qnap_check
 
 load_dotenv()
 
-app = FastAPI(title="Homelab Automation API", version="1.1.0")
+app = FastAPI(title="Homelab Automation API", version="1.1.1")
 
 
-def require_token(x_api_token: str | None) -> None:
+def require_token(x_api_token: Optional[str]) -> None:
     expected = os.environ.get("API_TOKEN", "").strip()
     if not expected:
         raise HTTPException(status_code=500, detail="API token is not configured")
@@ -718,42 +632,33 @@ def health() -> dict:
 
 
 @app.post("/run/qnap-check")
-def api_qnap_check(x_api_token: str | None = Header(default=None)):
+def api_qnap_check(x_api_token: Optional[str] = Header(default=None)):
     require_token(x_api_token)
     try:
         result = run_qnap_check()
         return JSONResponse(content=result)
     except Exception as exc:
-        return JSONResponse(
-            status_code=500,
-            content={"ok": False, "error": str(exc), "section": "qnap"},
-        )
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc), "section": "qnap"})
 
 
 @app.post("/run/opnsense-health")
-def api_opnsense_health(x_api_token: str | None = Header(default=None)):
+def api_opnsense_health(x_api_token: Optional[str] = Header(default=None)):
     require_token(x_api_token)
     try:
         result = run_opnsense_health()
         return JSONResponse(content=result)
     except Exception as exc:
-        return JSONResponse(
-            status_code=500,
-            content={"ok": False, "error": str(exc), "section": "opnsense"},
-        )
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc), "section": "opnsense"})
 
 
 @app.post("/run/all-checks")
-def api_all_checks(x_api_token: str | None = Header(default=None)):
+def api_all_checks(x_api_token: Optional[str] = Header(default=None)):
     require_token(x_api_token)
     try:
         result = run_all_checks()
         return JSONResponse(content=result)
     except Exception as exc:
-        return JSONResponse(
-            status_code=500,
-            content={"ok": False, "error": str(exc), "section": "all-checks"},
-        )
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc), "section": "all-checks"})
 EOF
 
 chmod +x bootstrap.sh start_api.sh
@@ -765,8 +670,8 @@ echo "Next:"
 echo "  1) cp -n .env.example .env"
 echo "  2) edit .env with real passwords, API keys, and API_TOKEN"
 echo "  3) ./bootstrap.sh"
-echo "  4) PORT=8001 ./start_api.sh"
+echo "  4) PORT=8010 ./start_api.sh"
 echo
 echo "Tests:"
-echo "  curl http://127.0.0.1:8001/health"
-echo "  curl -X POST http://127.0.0.1:8001/run/all-checks -H 'X-API-Token: YOUR_REAL_TOKEN'"
+echo "  curl http://127.0.0.1:8010/health"
+echo "  curl -X POST http://127.0.0.1:8010/run/all-checks -H 'X-API-Token: YOUR_REAL_TOKEN'"
