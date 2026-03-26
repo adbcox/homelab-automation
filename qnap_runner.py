@@ -92,7 +92,7 @@ class QnapRunner:
         for url in candidates:
             try:
                 self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                self.page.wait_for_timeout(1500)
+                self.page.wait_for_timeout(2000)
                 title = self.page.title().lower()
                 body = self.page.locator("body").inner_text(timeout=5000).lower()
                 if "forbidden" not in title and "forbidden" not in body:
@@ -102,8 +102,26 @@ class QnapRunner:
 
         self.page.goto(base, wait_until="domcontentloaded", timeout=30000)
 
+    def is_logged_in(self) -> bool:
+        try:
+            body = self.page.locator("body").inner_text(timeout=5000).lower()
+        except Exception:
+            return False
+
+        dashboard_markers = [
+            "storage & snapshots",
+            "control panel",
+            "resource monitor",
+            "app center",
+            "server2",
+        ]
+        return any(marker in body for marker in dashboard_markers)
+
     def try_login(self) -> bool:
         self.goto_login()
+
+        if self.is_logged_in():
+            return True
 
         user_selectors = [
             'input[name="username"]',
@@ -114,6 +132,8 @@ class QnapRunner:
         pass_selectors = [
             'input[name="password"]',
             'input[id="password"]',
+            'input[id="pwd"]',
+            'input[placeholder*="password" i]',
             'input[type="password"]',
         ]
         button_selectors = [
@@ -128,52 +148,185 @@ class QnapRunner:
         for sel in user_selectors:
             loc = self.page.locator(sel).first
             if loc.count() > 0:
-                loc.fill(self.settings.qnap_username)
-                user_filled = True
-                break
+                try:
+                    if loc.is_visible(timeout=2000):
+                        loc.fill(self.settings.qnap_username, timeout=5000)
+                        user_filled = True
+                        break
+                except Exception:
+                    continue
 
         pass_filled = False
         for sel in pass_selectors:
             loc = self.page.locator(sel).first
             if loc.count() > 0:
-                loc.fill(self.settings.qnap_password)
-                pass_filled = True
-                break
+                try:
+                    if loc.is_visible(timeout=2000):
+                        loc.fill(self.settings.qnap_password, timeout=5000)
+                        pass_filled = True
+                        break
+                except Exception:
+                    continue
 
         if not (user_filled and pass_filled):
-            return False
+            return self.is_logged_in()
 
         clicked = False
         for sel in button_selectors:
             loc = self.page.locator(sel).first
             if loc.count() > 0:
-                loc.click()
-                clicked = True
-                break
+                try:
+                    if loc.is_visible(timeout=2000):
+                        loc.click(timeout=5000)
+                        clicked = True
+                        break
+                except Exception:
+                    continue
 
-        if not clicked:
-            return False
+        if clicked:
+            self.page.wait_for_timeout(5000)
 
-        self.page.wait_for_timeout(4000)
-        return True
+        return self.is_logged_in()
+
+    def _click_first_working(self, selectors: list[str]) -> bool:
+        for sel in selectors:
+            try:
+                loc = self.page.locator(sel).first
+                if loc.count() > 0 and loc.is_visible(timeout=2000):
+                    loc.scroll_into_view_if_needed(timeout=3000)
+                    loc.click(timeout=5000)
+                    self.page.wait_for_timeout(4000)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def go_to_storage_snapshots(self) -> bool:
+        selectors = [
+            'text="Storage & Snapshots"',
+            'text="Storage"',
+            '[title="Storage & Snapshots"]',
+            '[aria-label="Storage & Snapshots"]',
+            'a:has-text("Storage & Snapshots")',
+            'div:has-text("Storage & Snapshots")',
+            'span:has-text("Storage & Snapshots")',
+            'li:has-text("Storage & Snapshots")',
+            'a:has-text("Storage")',
+            'div:has-text("Storage")',
+            'span:has-text("Storage")',
+            'li:has-text("Storage")',
+        ]
+
+        if self._click_first_working(selectors):
+            return True
+
+        try:
+            all_candidates = self.page.locator("a, button, div, span, li")
+            count = min(all_candidates.count(), 300)
+            for i in range(count):
+                el = all_candidates.nth(i)
+                try:
+                    text = el.inner_text(timeout=1000).strip()
+                    visible = el.is_visible(timeout=1000)
+                except Exception:
+                    continue
+                if not visible:
+                    continue
+                text_l = text.lower()
+                if "storage & snapshots" in text_l or text_l == "storage":
+                    try:
+                        el.scroll_into_view_if_needed(timeout=3000)
+                        el.click(timeout=5000)
+                        self.page.wait_for_timeout(4000)
+                        return True
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        return False
+
+    def extract_interesting_lines(self, body_text: str) -> list[str]:
+        keywords = [
+            "warning",
+            "error",
+            "degraded",
+            "critical",
+            "failed",
+            "healthy",
+            "good",
+            "ok",
+            "raid",
+            "disk",
+            "volume",
+            "pool",
+            "snapshot",
+            "storage",
+            "read/write",
+            "abnormal",
+        ]
+
+        lines = [line.strip() for line in body_text.splitlines() if line.strip()]
+        interesting: list[str] = []
+
+        noise = {
+            "good",
+            "warning",
+            "error",
+            "ok",
+            "storage & snapshots",
+            "storage",
+            "snapshot",
+            "overview",
+            "data protection",
+        }
+
+        for line in lines:
+            low = line.lower()
+            if low in noise:
+                continue
+            if any(word in low for word in keywords):
+                interesting.append(line)
+
+        deduped: list[str] = []
+        seen = set()
+        for line in interesting:
+            if line not in seen:
+                deduped.append(line)
+                seen.add(line)
+
+        return deduped[:30]
 
     def qnap_health_snapshot(self) -> dict:
         self.goto_login()
-        before = self.screenshot("qnap-login.png")
-
         login_ok = self.try_login()
-        after = self.screenshot("qnap-after-login.png")
+        dashboard_shot = self.screenshot("qnap-dashboard.png")
+
+        storage_clicked = False
+        if login_ok:
+            storage_clicked = self.go_to_storage_snapshots()
+
+        self.page.wait_for_timeout(5000)
+        storage_shot = self.screenshot("qnap-storage.png")
 
         title = self.page.title()
-        body_text = self.page.locator("body").inner_text(timeout=10000)[:4000]
+        body_text = self.page.locator("body").inner_text(timeout=10000)[:12000]
+        interesting_lines = self.extract_interesting_lines(body_text)
+
+        warning_signals = [
+            line for line in interesting_lines
+            if any(word in line.lower() for word in ["warning", "error", "degraded", "critical", "failed", "abnormal"])
+        ]
 
         return {
             "qnap_url": self.settings.qnap_url,
-            "login_attempted": True,
             "login_ok": login_ok,
+            "storage_clicked": storage_clicked,
             "title": title,
-            "before_screenshot": before,
-            "after_screenshot": after,
-            "body_excerpt": body_text,
             "current_url": self.page.url,
+            "dashboard_screenshot": dashboard_shot,
+            "storage_screenshot": storage_shot,
+            "warning_count": len(warning_signals),
+            "warning_lines": warning_signals,
+            "interesting_lines": interesting_lines,
         }
